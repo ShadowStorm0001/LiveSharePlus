@@ -3,8 +3,9 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
-const sqlite3 = require('sqlite3').verbose();
+const fs = require('fs').promises;
 const path = require('path');
+const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const server = http.createServer(app);
@@ -19,36 +20,16 @@ const io = socketIo(server, {
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Database setup
-const db = new sqlite3.Database(':memory:', (err) => {
-  if (err) {
-    console.error('Error opening database:', err);
-  } else {
-    console.log('Connected to SQLite database');
-  }
-});
+// Create sessions directory if it doesn't exist
+const SESSIONS_DIR = './sessions';
 
-// Initialize database tables
-db.serialize(() => {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
-      name TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  
-  db.run(`
-    CREATE TABLE IF NOT EXISTS files (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT,
-      file_path TEXT,
-      content TEXT,
-      last_modified DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
-    )
-  `);
-});
+async function ensureSessionsDir() {
+  try {
+    await fs.access(SESSIONS_DIR);
+  } catch {
+    await fs.mkdir(SESSIONS_DIR, { recursive: true });
+  }
+}
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -56,7 +37,8 @@ app.get('/health', (req, res) => {
 });
 
 // Create session
-app.post('/api/sessions', (req, res) => {
+app.post('/api/sessions', async (req, res) => {
+  await ensureSessionsDir();
   const { name } = req.body;
   
   if (!name) {
@@ -64,40 +46,44 @@ app.post('/api/sessions', (req, res) => {
   }
   
   const sessionId = Math.random().toString(36).substring(2, 8).toUpperCase();
+  const sessionDir = path.join(SESSIONS_DIR, sessionId);
   
-  db.run(
-    'INSERT INTO sessions (id, name) VALUES (?, ?)',
-    [sessionId, name],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
-      res.json({ sessionId: sessionId, name: name });
-    }
-  );
+  try {
+    await fs.mkdir(sessionDir, { recursive: true });
+    
+    // Create session info file
+    const sessionInfo = {
+      id: sessionId,
+      name: name,
+      createdAt: new Date().toISOString()
+    };
+    
+    await fs.writeFile(
+      path.join(sessionDir, 'session.json'),
+      JSON.stringify(sessionInfo, null, 2)
+    );
+    
+    res.json({ sessionId: sessionId, name: name });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Join session
-app.get('/api/sessions/:sessionId', (req, res) => {
+app.get('/api/sessions/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
+  const sessionDir = path.join(SESSIONS_DIR, sessionId);
   
-  db.get(
-    'SELECT * FROM sessions WHERE id = ?',
-    [sessionId],
-    (err, row) => {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
-      if (!row) {
-        return res.status(404).json({ error: 'Session not found' });
-      }
-      res.json(row);
-    }
-  );
+  try {
+    const sessionInfo = await fs.readFile(path.join(sessionDir, 'session.json'), 'utf8');
+    res.json(JSON.parse(sessionInfo));
+  } catch (error) {
+    res.status(404).json({ error: 'Session not found' });
+  }
 });
 
 // Save file
-app.post('/api/sessions/:sessionId/files', (req, res) => {
+app.post('/api/sessions/:sessionId/files', async (req, res) => {
   const { sessionId } = req.params;
   const { filePath, content } = req.body;
   
@@ -105,54 +91,59 @@ app.post('/api/sessions/:sessionId/files', (req, res) => {
     return res.status(400).json({ error: 'filePath and content are required' });
   }
   
-  db.run(
-    'INSERT OR REPLACE INTO files (session_id, file_path, content) VALUES (?, ?, ?)',
-    [sessionId, filePath, content],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
-      res.json({ message: 'File saved successfully' });
-    }
-  );
+  const sessionDir = path.join(SESSIONS_DIR, sessionId);
+  const fileFullPath = path.join(sessionDir, filePath);
+  
+  try {
+    // Create directory if it doesn't exist
+    await fs.mkdir(path.dirname(fileFullPath), { recursive: true });
+    
+    await fs.writeFile(fileFullPath, content);
+    res.json({ message: 'File saved successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Get file
-app.get('/api/sessions/:sessionId/files/:filePath', (req, res) => {
+app.get('/api/sessions/:sessionId/files/:filePath', async (req, res) => {
   const { sessionId, filePath } = req.params;
+  const fileFullPath = path.join(SESSIONS_DIR, sessionId, filePath);
   
-  db.get(
-    'SELECT content FROM files WHERE session_id = ? AND file_path = ?',
-    [sessionId, decodeURIComponent(filePath)],
-    (err, row) => {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
-      if (!row) {
-        return res.status(404).json({ error: 'File not found' });
-      }
-      res.json({ content: row.content });
-    }
-  );
+  try {
+    const content = await fs.readFile(fileFullPath, 'utf8');
+    res.json({ content: content });
+  } catch (error) {
+    res.status(404).json({ error: 'File not found' });
+  }
 });
 
 // List files
-app.get('/api/sessions/:sessionId/files', (req, res) => {
+app.get('/api/sessions/:sessionId/files', async (req, res) => {
   const { sessionId } = req.params;
+  const sessionDir = path.join(SESSIONS_DIR, sessionId);
   
-  db.all(
-    'SELECT file_path FROM files WHERE session_id = ?',
-    [sessionId],
-    (err, rows) => {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
-      res.json({ files: rows.map(row => row.file_path) });
-    }
-  );
+  try {
+    const files = await fs.readdir(sessionDir);
+    // Filter out session.json and return only code files
+    const codeFiles = files.filter(file => file !== 'session.json');
+    res.json({ files: codeFiles });
+  } catch (error) {
+    res.status(404).json({ error: 'Session not found' });
+  }
 });
 
-// Socket.io for real-time collaboration
+// View all sessions (for GitHub repo viewing)
+app.get('/api/sessions', async (req, res) => {
+  try {
+    const sessions = await fs.readdir(SESSIONS_DIR);
+    res.json({ sessions: sessions });
+  } catch (error) {
+    res.json({ sessions: [] });
+  }
+});
+
+// Socket.io for real-time collaboration (keep this)
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
   
@@ -160,36 +151,15 @@ io.on('connection', (socket) => {
     const { sessionId, userName } = data;
     socket.join(sessionId);
     console.log(`User ${socket.id} (${userName}) joined session ${sessionId}`);
-    
-    // Notify others in the session
-    socket.to(sessionId).emit('user-joined', {
-      userId: socket.id,
-      userName: userName || 'Anonymous'
-    });
   });
   
   socket.on('code-change', (data) => {
     const { sessionId, filePath, content } = data;
-    
-    // Save to database
-    db.run(
-      'INSERT OR REPLACE INTO files (session_id, file_path, content) VALUES (?, ?, ?)',
-      [sessionId, filePath, content],
-      (err) => {
-        if (err) {
-          console.error('Error saving file:', err);
-        }
-      }
-    );
-    
-    // Broadcast to other users in the same session
     socket.to(sessionId).emit('code-update', {
       filePath: filePath,
       content: content,
       sender: socket.id
     });
-    
-    console.log(`Code update for session ${sessionId}, file: ${filePath}`);
   });
   
   socket.on('disconnect', () => {
@@ -203,6 +173,8 @@ app.get('/', (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
+  await ensureSessionsDir();
   console.log(`Live Share server running on port ${PORT}`);
+  console.log(`Files are stored in: ${path.resolve(SESSIONS_DIR)}`);
 });
