@@ -191,6 +191,37 @@ app.get('/api/debug/sessions', async (req, res) => {
         }
       }
     }
+
+    // Debug endpoint to see actual files
+app.get('/api/debug/filesystem', async (req, res) => {
+  try {
+    await ensureSessionsDir();
+    const sessions = await fs.readdir(SESSIONS_DIR);
+    const result = {};
+
+    for (const sessionId of sessions) {
+      if (sessionId !== '.gitkeep') {
+        const sessionDir = path.join(SESSIONS_DIR, sessionId);
+        try {
+          const files = await fs.readdir(sessionDir);
+          result[sessionId] = {
+            exists: true,
+            files: files
+          };
+        } catch (error) {
+          result[sessionId] = {
+            exists: false,
+            error: error.message
+          };
+        }
+      }
+    }
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
     
     res.json({ sessions: sessionList, total: sessionList.length });
   } catch (error) {
