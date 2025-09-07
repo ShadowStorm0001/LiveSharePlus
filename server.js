@@ -1,3 +1,6 @@
+const cors = require('cors');
+
+
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
@@ -347,12 +350,131 @@ io.on('connection', (socket) => {
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
+
 });
+
 
 app.get('/', (req, res) => {
   res.send('Live Share Server is running');
 });
 
+// Add these routes to your existing server.js
+
+
+
+// Get all sessions (for debugging)
+app.get('/api/sessions', (req, res) => {
+  db.all('SELECT * FROM sessions ORDER BY created_at DESC', (err, rows) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json({ sessions: rows });
+  });
+});
+
+// Create a new session
+app.post('/api/sessions', (req, res) => {
+  const { name } = req.body;
+  const sessionId = Math.random().toString(36).substring(2, 8).toUpperCase();
+  
+  db.run(
+    'INSERT INTO sessions (id, name) VALUES (?, ?)',
+    [sessionId, name],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json({ sessionId, name });
+    }
+  );
+});
+
+// Get session info
+app.get('/api/sessions/:sessionId', (req, res) => {
+  const { sessionId } = req.params;
+  
+  db.get(
+    'SELECT * FROM sessions WHERE id = ?',
+    [sessionId],
+    (err, row) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      if (!row) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+      res.json(row);
+    }
+  );
+});
+
+// Save a file
+app.post('/api/sessions/:sessionId/files', (req, res) => {
+  const { sessionId } = req.params;
+  const { filePath, content } = req.body;
+  
+  db.run(
+    'INSERT OR REPLACE INTO files (session_id, file_path, content) VALUES (?, ?, ?)',
+    [sessionId, filePath, content],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json({ message: 'File saved successfully' });
+    }
+  );
+});
+
+// Get a file
+app.get('/api/sessions/:sessionId/files/:filePath', (req, res) => {
+  const { sessionId, filePath } = req.params;
+  
+  db.get(
+    'SELECT content FROM files WHERE session_id = ? AND file_path = ?',
+    [sessionId, decodeURIComponent(filePath)],
+    (err, row) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      if (!row) {
+        return res.status(404).json({ error: 'File not found' });
+      }
+      res.json({ content: row.content });
+    }
+  );
+});
+
+// List all files in a session
+app.get('/api/sessions/:sessionId/files', (req, res) => {
+  const { sessionId } = req.params;
+  
+  db.all(
+    'SELECT file_path FROM files WHERE session_id = ?',
+    [sessionId],
+    (err, rows) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json({ files: rows.map(row => row.file_path) });
+    }
+  );
+});
+
+// Delete a session (optional)
+app.delete('/api/sessions/:sessionId', (req, res) => {
+  const { sessionId } = req.params;
+  
+  db.run(
+    'DELETE FROM sessions WHERE id = ?',
+    [sessionId],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json({ message: 'Session deleted' });
+    }
+  );
+});
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Live Share server running on port ${PORT}`);
