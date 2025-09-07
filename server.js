@@ -3,7 +3,6 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
-const { v4: uuidv4 } = require('uuid');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
@@ -51,12 +50,12 @@ db.serialize(() => {
   `);
 });
 
-// HEALTH CHECK - FIXED ENDPOINT
+// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'Live Share Server is running' });
 });
 
-// CREATE SESSION - FIXED ENDPOINT
+// Create session
 app.post('/api/sessions', (req, res) => {
   const { name } = req.body;
   
@@ -78,7 +77,7 @@ app.post('/api/sessions', (req, res) => {
   );
 });
 
-// JOIN SESSION - FIXED ENDPOINT
+// Join session
 app.get('/api/sessions/:sessionId', (req, res) => {
   const { sessionId } = req.params;
   
@@ -97,7 +96,7 @@ app.get('/api/sessions/:sessionId', (req, res) => {
   );
 });
 
-// SAVE FILE - FIXED ENDPOINT
+// Save file
 app.post('/api/sessions/:sessionId/files', (req, res) => {
   const { sessionId } = req.params;
   const { filePath, content } = req.body;
@@ -118,7 +117,7 @@ app.post('/api/sessions/:sessionId/files', (req, res) => {
   );
 });
 
-// GET FILE - FIXED ENDPOINT
+// Get file
 app.get('/api/sessions/:sessionId/files/:filePath', (req, res) => {
   const { sessionId, filePath } = req.params;
   
@@ -137,7 +136,7 @@ app.get('/api/sessions/:sessionId/files/:filePath', (req, res) => {
   );
 });
 
-// LIST FILES - FIXED ENDPOINT
+// List files
 app.get('/api/sessions/:sessionId/files', (req, res) => {
   const { sessionId } = req.params;
   
@@ -161,15 +160,36 @@ io.on('connection', (socket) => {
     const { sessionId, userName } = data;
     socket.join(sessionId);
     console.log(`User ${socket.id} (${userName}) joined session ${sessionId}`);
+    
+    // Notify others in the session
+    socket.to(sessionId).emit('user-joined', {
+      userId: socket.id,
+      userName: userName || 'Anonymous'
+    });
   });
   
   socket.on('code-change', (data) => {
     const { sessionId, filePath, content } = data;
+    
+    // Save to database
+    db.run(
+      'INSERT OR REPLACE INTO files (session_id, file_path, content) VALUES (?, ?, ?)',
+      [sessionId, filePath, content],
+      (err) => {
+        if (err) {
+          console.error('Error saving file:', err);
+        }
+      }
+    );
+    
+    // Broadcast to other users in the same session
     socket.to(sessionId).emit('code-update', {
       filePath: filePath,
       content: content,
       sender: socket.id
     });
+    
+    console.log(`Code update for session ${sessionId}, file: ${filePath}`);
   });
   
   socket.on('disconnect', () => {
