@@ -5,7 +5,6 @@ const socketIo = require('socket.io');
 const cors = require('cors');
 const fs = require('fs').promises;
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const server = http.createServer(app);
@@ -28,6 +27,7 @@ async function ensureSessionsDir() {
     await fs.access(SESSIONS_DIR);
   } catch {
     await fs.mkdir(SESSIONS_DIR, { recursive: true });
+    console.log('Created sessions directory');
   }
 }
 
@@ -36,19 +36,20 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'Live Share Server is running' });
 });
 
-// Create session
+// Create session - FIXED
 app.post('/api/sessions', async (req, res) => {
-  await ensureSessionsDir();
-  const { name } = req.body;
-  
-  if (!name) {
-    return res.status(400).json({ error: 'Session name is required' });
-  }
-  
-  const sessionId = Math.random().toString(36).substring(2, 8).toUpperCase();
-  const sessionDir = path.join(SESSIONS_DIR, sessionId);
-  
   try {
+    await ensureSessionsDir();
+    const { name } = req.body;
+    
+    if (!name) {
+      return res.status(400).json({ error: 'Session name is required' });
+    }
+    
+    const sessionId = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const sessionDir = path.join(SESSIONS_DIR, sessionId);
+    
+    // Create session directory
     await fs.mkdir(sessionDir, { recursive: true });
     
     // Create session info file
@@ -63,87 +64,141 @@ app.post('/api/sessions', async (req, res) => {
       JSON.stringify(sessionInfo, null, 2)
     );
     
+    // Create default main.js file
+    const defaultContent = `// Welcome to Live Share Session: ${sessionId}
+// Start editing this file to collaborate with others!
+
+function welcomeMessage() {
+    return "Hello from Live Share!";
+}
+
+console.log(welcomeMessage());`;
+
+    await fs.writeFile(
+      path.join(sessionDir, 'main.js'),
+      defaultContent
+    );
+    
+    console.log(`Session created: ${sessionId}`);
     res.json({ sessionId: sessionId, name: name });
+    
   } catch (error) {
+    console.error('Error creating session:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Join session
+// Join session - FIXED
 app.get('/api/sessions/:sessionId', async (req, res) => {
-  const { sessionId } = req.params;
-  const sessionDir = path.join(SESSIONS_DIR, sessionId);
-  
   try {
+    const { sessionId } = req.params;
+    const sessionDir = path.join(SESSIONS_DIR, sessionId);
+    
+    // Check if session directory exists
+    try {
+      await fs.access(sessionDir);
+    } catch {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    
     const sessionInfo = await fs.readFile(path.join(sessionDir, 'session.json'), 'utf8');
     res.json(JSON.parse(sessionInfo));
-  } catch (error) {
-    res.status(404).json({ error: 'Session not found' });
-  }
-});
-
-// Save file
-app.post('/api/sessions/:sessionId/files', async (req, res) => {
-  const { sessionId } = req.params;
-  const { filePath, content } = req.body;
-  
-  if (!filePath || content === undefined) {
-    return res.status(400).json({ error: 'filePath and content are required' });
-  }
-  
-  const sessionDir = path.join(SESSIONS_DIR, sessionId);
-  const fileFullPath = path.join(sessionDir, filePath);
-  
-  try {
-    // Create directory if it doesn't exist
-    await fs.mkdir(path.dirname(fileFullPath), { recursive: true });
     
-    await fs.writeFile(fileFullPath, content);
-    res.json({ message: 'File saved successfully' });
   } catch (error) {
+    console.error('Error joining session:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get file
-app.get('/api/sessions/:sessionId/files/:filePath', async (req, res) => {
-  const { sessionId, filePath } = req.params;
-  const fileFullPath = path.join(SESSIONS_DIR, sessionId, filePath);
-  
+// List files - FIXED
+app.get('/api/sessions/:sessionId/files', async (req, res) => {
   try {
+    const { sessionId } = req.params;
+    const sessionDir = path.join(SESSIONS_DIR, sessionId);
+    
+    // Check if session exists
+    try {
+      await fs.access(sessionDir);
+    } catch {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    const files = await fs.readdir(sessionDir);
+    // Filter out session.json and return only code files
+    const codeFiles = files.filter(file => file !== 'session.json' && file !== '.gitkeep');
+    res.json({ files: codeFiles });
+    
+  } catch (error) {
+    console.error('Error listing files:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get file content - FIXED
+app.get('/api/sessions/:sessionId/files/:filePath', async (req, res) => {
+  try {
+    const { sessionId, filePath } = req.params;
+    const fileFullPath = path.join(SESSIONS_DIR, sessionId, filePath);
+    
     const content = await fs.readFile(fileFullPath, 'utf8');
     res.json({ content: content });
+    
   } catch (error) {
+    console.error('Error getting file:', error);
     res.status(404).json({ error: 'File not found' });
   }
 });
 
-// List files
-app.get('/api/sessions/:sessionId/files', async (req, res) => {
-  const { sessionId } = req.params;
-  const sessionDir = path.join(SESSIONS_DIR, sessionId);
-  
+// Save file - FIXED
+app.post('/api/sessions/:sessionId/files', async (req, res) => {
   try {
-    const files = await fs.readdir(sessionDir);
-    // Filter out session.json and return only code files
-    const codeFiles = files.filter(file => file !== 'session.json');
-    res.json({ files: codeFiles });
+    const { sessionId } = req.params;
+    const { filePath, content } = req.body;
+    
+    if (!filePath || content === undefined) {
+      return res.status(400).json({ error: 'filePath and content are required' });
+    }
+    
+    const sessionDir = path.join(SESSIONS_DIR, sessionId);
+    const fileFullPath = path.join(sessionDir, filePath);
+    
+    // Create session directory if it doesn't exist
+    await fs.mkdir(sessionDir, { recursive: true });
+    
+    await fs.writeFile(fileFullPath, content);
+    res.json({ message: 'File saved successfully' });
+    
   } catch (error) {
-    res.status(404).json({ error: 'Session not found' });
+    console.error('Error saving file:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// View all sessions (for GitHub repo viewing)
-app.get('/api/sessions', async (req, res) => {
+// Debug endpoint to see all sessions
+app.get('/api/debug/sessions', async (req, res) => {
   try {
+    await ensureSessionsDir();
     const sessions = await fs.readdir(SESSIONS_DIR);
-    res.json({ sessions: sessions });
+    const sessionList = [];
+    
+    for (const sessionId of sessions) {
+      if (sessionId !== '.gitkeep') {
+        try {
+          const sessionInfo = await fs.readFile(path.join(SESSIONS_DIR, sessionId, 'session.json'), 'utf8');
+          sessionList.push(JSON.parse(sessionInfo));
+        } catch (e) {
+          sessionList.push({ id: sessionId, error: 'No session info' });
+        }
+      }
+    }
+    
+    res.json({ sessions: sessionList, total: sessionList.length });
   } catch (error) {
-    res.json({ sessions: [] });
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Socket.io for real-time collaboration (keep this)
+// Socket.io for real-time collaboration
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
   
@@ -176,5 +231,5 @@ const PORT = process.env.PORT || 10000;
 server.listen(PORT, async () => {
   await ensureSessionsDir();
   console.log(`Live Share server running on port ${PORT}`);
-  console.log(`Files are stored in: ${path.resolve(SESSIONS_DIR)}`);
+  console.log(`Sessions directory: ${path.resolve(SESSIONS_DIR)}`);
 });
