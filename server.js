@@ -31,12 +31,49 @@ async function ensureSessionsDir() {
   }
 }
 
+// Function to create default files for a session
+async function createDefaultFiles(sessionId, sessionName) {
+  const sessionDir = path.join(SESSIONS_DIR, sessionId);
+  
+  // Create session directory
+  await fs.mkdir(sessionDir, { recursive: true });
+  
+  // Create session info file
+  const sessionInfo = {
+    id: sessionId,
+    name: sessionName,
+    createdAt: new Date().toISOString()
+  };
+  
+  await fs.writeFile(
+    path.join(sessionDir, 'session.json'),
+    JSON.stringify(sessionInfo, null, 2)
+  );
+
+  // Create default main.js file
+  const defaultContent = `// Welcome to Live Share Session: ${sessionId}
+// Start editing this file to collaborate with others!
+
+function welcomeMessage() {
+    return "Hello from Live Share!";
+}
+
+console.log(welcomeMessage());`;
+
+  await fs.writeFile(
+    path.join(sessionDir, 'main.js'),
+    defaultContent
+  );
+  
+  console.log(`Default files created for session: ${sessionId}`);
+}
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'Live Share Server is running' });
 });
 
-// Create session - FIXED
+// Create session - FIXED to create default files
 app.post('/api/sessions', async (req, res) => {
   try {
     await ensureSessionsDir();
@@ -47,37 +84,9 @@ app.post('/api/sessions', async (req, res) => {
     }
     
     const sessionId = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const sessionDir = path.join(SESSIONS_DIR, sessionId);
     
-    // Create session directory
-    await fs.mkdir(sessionDir, { recursive: true });
-    
-    // Create session info file
-    const sessionInfo = {
-      id: sessionId,
-      name: name,
-      createdAt: new Date().toISOString()
-    };
-    
-    await fs.writeFile(
-      path.join(sessionDir, 'session.json'),
-      JSON.stringify(sessionInfo, null, 2)
-    );
-    
-    // Create default main.js file
-    const defaultContent = `// Welcome to Live Share Session: ${sessionId}
-// Start editing this file to collaborate with others!
-
-function welcomeMessage() {
-    return "Hello from Live Share!";
-}
-
-console.log(welcomeMessage());`;
-
-    await fs.writeFile(
-      path.join(sessionDir, 'main.js'),
-      defaultContent
-    );
+    // Create default files for the session
+    await createDefaultFiles(sessionId, name);
     
     console.log(`Session created: ${sessionId}`);
     res.json({ sessionId: sessionId, name: name });
@@ -88,7 +97,7 @@ console.log(welcomeMessage());`;
   }
 });
 
-// Join session - FIXED
+// Join session
 app.get('/api/sessions/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -110,7 +119,7 @@ app.get('/api/sessions/:sessionId', async (req, res) => {
   }
 });
 
-// List files - FIXED
+// List files
 app.get('/api/sessions/:sessionId/files', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -134,7 +143,7 @@ app.get('/api/sessions/:sessionId/files', async (req, res) => {
   }
 });
 
-// Get file content - FIXED
+// Get file content
 app.get('/api/sessions/:sessionId/files/:filePath', async (req, res) => {
   try {
     const { sessionId, filePath } = req.params;
@@ -149,7 +158,7 @@ app.get('/api/sessions/:sessionId/files/:filePath', async (req, res) => {
   }
 });
 
-// Save file - FIXED
+// Save file
 app.post('/api/sessions/:sessionId/files', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -191,8 +200,14 @@ app.get('/api/debug/sessions', async (req, res) => {
         }
       }
     }
+    
+    res.json({ sessions: sessionList, total: sessionList.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    // Debug endpoint to see actual files
+// Debug endpoint to see filesystem
 app.get('/api/debug/filesystem', async (req, res) => {
   try {
     await ensureSessionsDir();
@@ -222,12 +237,6 @@ app.get('/api/debug/filesystem', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-    
-    res.json({ sessions: sessionList, total: sessionList.length });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // Socket.io for real-time collaboration
 io.on('connection', (socket) => {
@@ -241,6 +250,18 @@ io.on('connection', (socket) => {
   
   socket.on('code-change', (data) => {
     const { sessionId, filePath, content } = data;
+    
+    // Save to filesystem
+    const sessionDir = path.join(SESSIONS_DIR, sessionId);
+    const fileFullPath = path.join(sessionDir, filePath);
+    
+    fs.mkdir(sessionDir, { recursive: true }).then(() => {
+      fs.writeFile(fileFullPath, content).catch(err => {
+        console.error('Error saving file via socket:', err);
+      });
+    });
+    
+    // Broadcast to other users
     socket.to(sessionId).emit('code-update', {
       filePath: filePath,
       content: content,
